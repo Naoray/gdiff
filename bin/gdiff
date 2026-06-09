@@ -94,6 +94,7 @@ if [ ! -s "$patch_file" ]; then
 fi
 collect_diff never 20 >"$patch_more_file"
 collect_diff never 999999 >"$patch_full_file"
+review_context_id="$(git hash-object "$patch_file")"
 
 repo_root="$(git rev-parse --show-toplevel)"
 repo_name="$(basename "$repo_root")"
@@ -809,6 +810,11 @@ const patchPayloads = {
 };
 let baseItems = [];
 const comments = new Map();
+const reviewContextId = "$review_context_id";
+const reviewStateEndpoint = location.protocol === "http:" || location.protocol === "https:" ? "/gdiff-review-state" : "";
+let reviewStateAvailable = false;
+let reviewState = null;
+let pendingReviewSave = Promise.resolve();
 const storageKey = "gdiff-review-comments:" + location.pathname;
 const viewStorageKey = "gdiff-view-style:" + location.pathname;
 const viewedStorageKey = "gdiff-viewed-files:" + location.pathname;
@@ -949,18 +955,109 @@ function loadPatchView(scrollItemId) {
   scheduleHunkEnhancement();
 }
 
-function loadComments() {
+function normalizeComment(comment) {
+  if (!comment || typeof comment !== "object" || !comment.id) return null;
+  return {
+    id: String(comment.id),
+    kind: comment.kind || "line",
+    itemId: comment.itemId || "",
+    file: comment.file || "",
+    side: comment.side || "",
+    line: Number(comment.line || comment.startLine || 0),
+    startLine: Number(comment.startLine || comment.line || 0),
+    endLine: Number(comment.endLine || comment.startLine || comment.line || 0),
+    code: comment.code || "",
+    comment: comment.comment || "",
+    resolved: Boolean(comment.resolved),
+    resolution: comment.resolution || ""
+  };
+}
+
+function serializedComments() {
+  return Array.from(comments.values()).map(normalizeComment).filter(Boolean);
+}
+
+function mergeComments(list) {
+  if (!Array.isArray(list)) return;
+  list.map(normalizeComment).filter(Boolean).forEach(comment => {
+    comments.set(comment.id, comment);
+  });
+}
+
+function localComments() {
   try {
-    JSON.parse(localStorage.getItem(storageKey) || "[]").forEach(comment => {
-      comments.set(comment.id, comment);
-    });
+    return JSON.parse(localStorage.getItem(storageKey) || "[]");
   } catch {
-    comments.clear();
+    return [];
   }
 }
 
+function commentsFromReviewState(state) {
+  if (!state || typeof state !== "object") return [];
+  const context = state.contexts && state.contexts[reviewContextId];
+  if (context && Array.isArray(context.comments)) return context.comments;
+  if (!state.contexts && Array.isArray(state.comments)) return state.comments;
+  if (state.currentContext === reviewContextId && Array.isArray(state.comments)) return state.comments;
+  return [];
+}
+
+async function loadComments() {
+  comments.clear();
+  const local = localComments();
+  mergeComments(local);
+  if (!reviewStateEndpoint) return;
+  try {
+    const response = await fetch(reviewStateEndpoint, { cache: "no-store" });
+    if (!response.ok) return;
+    reviewState = await response.json();
+    reviewStateAvailable = true;
+    mergeComments(commentsFromReviewState(reviewState));
+    saveLocalComments();
+    if (local.length) persistComments();
+  } catch {
+    reviewStateAvailable = false;
+  }
+}
+
+function saveLocalComments() {
+  localStorage.setItem(storageKey, JSON.stringify(serializedComments()));
+}
+
+function buildReviewStatePayload() {
+  const commentsList = serializedComments();
+  const nextState = reviewState && typeof reviewState === "object" && !Array.isArray(reviewState) ? { ...reviewState } : {};
+  nextState.version = 1;
+  nextState.currentContext = reviewContextId;
+  nextState.updatedAt = new Date().toISOString();
+  nextState.contexts = nextState.contexts && typeof nextState.contexts === "object" && !Array.isArray(nextState.contexts) ? { ...nextState.contexts } : {};
+  nextState.contexts[reviewContextId] = {
+    updatedAt: nextState.updatedAt,
+    comments: commentsList
+  };
+  nextState.comments = commentsList;
+  return nextState;
+}
+
+function persistComments() {
+  if (!reviewStateAvailable || !reviewStateEndpoint) return;
+  const payload = buildReviewStatePayload();
+  reviewState = payload;
+  pendingReviewSave = pendingReviewSave.catch(() => {}).then(() =>
+    fetch(reviewStateEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(response => {
+      if (!response.ok) throw new Error("Unable to persist review state");
+    }).catch(() => {
+      reviewStateAvailable = false;
+    })
+  );
+}
+
 function saveComments() {
-  localStorage.setItem(storageKey, JSON.stringify(Array.from(comments.values())));
+  saveLocalComments();
+  persistComments();
 }
 
 function itemForId(itemId) {
@@ -1244,6 +1341,7 @@ function saveCurrentComment(rawValue) {
   if (!currentTarget) return;
   const value = String(rawValue || "").trim();
   const id = commentId(currentTarget);
+  const existing = comments.get(id);
   if (!value) {
     comments.delete(id);
   } else {
@@ -1257,7 +1355,9 @@ function saveCurrentComment(rawValue) {
       startLine: currentTarget.startLine || 0,
       endLine: currentTarget.endLine || 0,
       code: currentTarget.code,
-      comment: value
+      comment: value,
+      resolved: existing?.resolved || false,
+      resolution: existing?.resolution || ""
     });
   }
   saveComments();
@@ -1706,7 +1806,7 @@ function renderHeaderMetadata(...args) {
   return wrap;
 }
 
-loadComments();
+await loadComments();
 viewer.setup(document.getElementById("viewer"));
 observeDiffViewer();
 loadPatchView();

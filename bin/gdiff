@@ -1354,7 +1354,7 @@ function escapeHtml(value) {
     "&": "&amp;",
     "<": "&lt;",
     ">": "&gt;",
-    "\\"": "&quot;"
+    "\"": "&quot;"
   })[char]);
 }
 
@@ -1702,6 +1702,7 @@ function saveCurrentComment(rawValue) {
   }
   updateReviewCount();
   renderFileList();
+  renderCommentList();
   closePanel();
 }
 
@@ -1726,7 +1727,7 @@ function buildPrompt() {
     ">": "&gt;",
     "&": "&amp;",
     "'": "&apos;",
-    "\\"": "&quot;"
+    "\"": "&quot;"
   })[char]);
   const list = Array.from(comments.values()).sort((a, b) =>
     a.file.localeCompare(b.file) || a.startLine - b.startLine || a.side.localeCompare(b.side)
@@ -1745,12 +1746,12 @@ function buildPrompt() {
   ];
   list.forEach((comment, index) => {
     const context = promptContextForComment(comment);
-    lines.push("  <comment index=\\"" + (index + 1) + "\\">");
+    lines.push("  <comment index=\"" + (index + 1) + "\">");
     lines.push("    <file>" + xml(comment.file) + "</file>");
     if (comment.kind === "file") {
       lines.push("    <scope>file</scope>");
     } else {
-      lines.push("    <lines side=\\"" + xml(comment.side) + "\\" start=\\"" + xml(comment.startLine) + "\\" end=\\"" + xml(comment.endLine) + "\\" />");
+      lines.push("    <lines side=\"" + xml(comment.side) + "\" start=\"" + xml(comment.startLine) + "\" end=\"" + xml(comment.endLine) + "\" />");
     }
     if (context && context.hunk) lines.push("    <hunk>" + xml(context.hunk) + "</hunk>");
     lines.push("    <code>" + xml(comment.code) + "</code>");
